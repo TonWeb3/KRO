@@ -211,165 +211,137 @@ def compute_lux_pivots_and_breaks(
     all_zones: List[SRZone] = []
     breaks: List[LuxBreakEvent] = []
 
-    # Slide across bars
-    for i in range(left_bars + right_bars, n):
-        p_idx = i - right_bars
-        target_h = highs[p_idx]
-        target_l = lows[p_idx]
-        target_o = opens[p_idx]
-        target_c = closes[p_idx]
-        target_ts = timestamps[p_idx]
+    # Slide across bars:
+    # In Pine Script:
+    # highUsePivot = fixnan(pivothigh(leftBars, rightBars)[1])
+    # lowUsePivot = fixnan(pivotlow(leftBars, rightBars)[1])
+    # pivothigh(leftBars, rightBars) on bar k evaluates bar p = k - rightBars.
+    # With [1], at bar i it evaluates the pivot from bar i - 1, meaning bar p = i - 1 - rightBars.
+    for i in range(left_bars + right_bars + 1, n):
+        p = i - 1 - right_bars
+        h_cand = highs[p]
+        l_cand = lows[p]
+        o_cand = opens[p]
+        c_cand = closes[p]
+        ts_cand = timestamps[p]
 
-        # Pivot High test: target_h strictly > left bars and >= right bars
-        left_h = highs[p_idx - left_bars : p_idx]
-        right_h = highs[p_idx + 1 : p_idx + right_bars + 1]
-        if len(left_h) and len(right_h):
-            if target_h > np.max(left_h) and target_h >= np.max(right_h):
-                last_hp = target_h
-                # Mark BOTH the high and low of the pivot candle as the RESISTANCE ZONE
-                active_res_zone = SRZone(
-                    zone_type="RESISTANCE",
-                    high=target_h,
-                    low=target_l,
-                    candle_open=target_o,
-                    candle_close=target_c,
-                    timeframe=timeframe,
-                    pivot_bar_index=p_idx,
-                    timestamp=target_ts,
-                    status="ACTIVE",
-                    touches=1
-                )
-                all_zones.append(active_res_zone)
+        # Pivot High test: h_cand strictly > left bars and >= right bars
+        is_p_high = (
+            all(h_cand > highs[p - k] for k in range(1, left_bars + 1)) and
+            all(h_cand >= highs[p + k] for k in range(1, right_bars + 1))
+        )
+        if is_p_high:
+            last_hp = h_cand
+            # Mark BOTH the high and low of the pivot candle as the RESISTANCE ZONE
+            active_res_zone = SRZone(
+                zone_type="RESISTANCE",
+                high=h_cand,
+                low=l_cand,
+                candle_open=o_cand,
+                candle_close=c_cand,
+                timeframe=timeframe,
+                pivot_bar_index=p,
+                timestamp=ts_cand,
+                status="ACTIVE",
+                touches=1
+            )
+            all_zones.append(active_res_zone)
 
-        # Pivot Low test: target_l strictly < left bars and <= right bars
-        left_l = lows[p_idx - left_bars : p_idx]
-        right_l = lows[p_idx + 1 : p_idx + right_bars + 1]
-        if len(left_l) and len(right_l):
-            if target_l < np.min(left_l) and target_l <= np.min(right_l):
-                last_lp = target_l
-                # Mark BOTH the high and low of the pivot candle as the SUPPORT ZONE
-                active_sup_zone = SRZone(
-                    zone_type="SUPPORT",
-                    high=target_h,
-                    low=target_l,
-                    candle_open=target_o,
-                    candle_close=target_c,
-                    timeframe=timeframe,
-                    pivot_bar_index=p_idx,
-                    timestamp=target_ts,
-                    status="ACTIVE",
-                    touches=1
-                )
-                all_zones.append(active_sup_zone)
+        # Pivot Low test: l_cand strictly < left bars and <= right bars
+        is_p_low = (
+            all(l_cand < lows[p - k] for k in range(1, left_bars + 1)) and
+            all(l_cand <= lows[p + k] for k in range(1, right_bars + 1))
+        )
+        if is_p_low:
+            last_lp = l_cand
+            # Mark BOTH the high and low of the pivot candle as the SUPPORT ZONE
+            active_sup_zone = SRZone(
+                zone_type="SUPPORT",
+                high=h_cand,
+                low=l_cand,
+                candle_open=o_cand,
+                candle_close=c_cand,
+                timeframe=timeframe,
+                pivot_bar_index=p,
+                timestamp=ts_cand,
+                status="ACTIVE",
+                touches=1
+            )
+            all_zones.append(active_sup_zone)
 
         high_use_pivot[i] = last_hp
         low_use_pivot[i] = last_lp
 
-        # Check zone interactions & breaks on bar i
-        c_prev = closes[i - 1]
+        # Check Breaks & Wicks on bar i exactly matching LuxAlgo Pine Script
+        hp = high_use_pivot[i]
+        lp = low_use_pivot[i]
+        hp_prev = high_use_pivot[i - 1]
+        lp_prev = low_use_pivot[i - 1]
+
         c_curr = closes[i]
+        c_prev = closes[i - 1]
         o_curr = opens[i]
         h_curr = highs[i]
         l_curr = lows[i]
         osc_curr = osc[i]
         bar_ts = timestamps[i]
 
-        # ---------------- RESISTANCE ZONE INTERACTIONS ----------------
-        if active_res_zone is not None:
-            # Did price enter the resistance zone?
-            entered_res = (h_curr >= active_res_zone.low and l_curr <= active_res_zone.high)
-            if entered_res:
-                active_res_zone.touches += 1
-                active_res_zone.status = "TESTING"
-
-                # Check for REVERSAL DOWN from Resistance Zone
-                upper_wick = h_curr - max(o_curr, c_curr)
-                candle_range = max(1e-4, h_curr - l_curr)
-                is_bearish = c_curr < o_curr
-                wick_ratio = upper_wick / candle_range
-
-                if is_bearish and (wick_ratio >= 0.25 or c_curr <= active_res_zone.mid):
-                    breaks.append(LuxBreakEvent(
-                        bar_index=i, timestamp=bar_ts, price=c_curr,
-                        break_type="REVERSAL_DOWN", label="REV ▼", volume_osc=osc_curr
-                    ))
-                    active_res_zone.status = "REVERSED_DOWN"
-
-            # Check for BREAKOUT UP above Resistance Zone
-            crossed_above_ceiling = (c_prev <= active_res_zone.high and c_curr > active_res_zone.high)
-            if crossed_above_ceiling:
-                is_adverse_wick = (o_curr - l_curr) > (c_curr - o_curr)
-                if not is_adverse_wick and (osc_curr > volume_thresh or c_curr > o_curr):
-                    breaks.append(LuxBreakEvent(
-                        bar_index=i, timestamp=bar_ts, price=c_curr,
-                        break_type="BREAK_UP", label="B", volume_osc=osc_curr
-                    ))
-                    active_res_zone.status = "BROKEN_UP"
-                elif is_adverse_wick:
-                    breaks.append(LuxBreakEvent(
-                        bar_index=i, timestamp=bar_ts, price=c_curr,
-                        break_type="BULL_WICK", label="Bull Wick", volume_osc=osc_curr
-                    ))
-
-        # ---------------- SUPPORT ZONE INTERACTIONS ----------------
-        if active_sup_zone is not None:
-            # Did price enter the support zone?
-            entered_sup = (l_curr <= active_sup_zone.high and h_curr >= active_sup_zone.low)
-            if entered_sup:
-                active_sup_zone.touches += 1
-                active_sup_zone.status = "TESTING"
-
-                # Check for REVERSAL UP from Support Zone
-                lower_wick = min(o_curr, c_curr) - l_curr
-                candle_range = max(1e-4, h_curr - l_curr)
-                is_bullish = c_curr > o_curr
-                wick_ratio = lower_wick / candle_range
-
-                if is_bullish and (wick_ratio >= 0.25 or c_curr >= active_sup_zone.mid):
-                    breaks.append(LuxBreakEvent(
-                        bar_index=i, timestamp=bar_ts, price=c_curr,
-                        break_type="REVERSAL_UP", label="REV ▲", volume_osc=osc_curr
-                    ))
-                    active_sup_zone.status = "REVERSED_UP"
-
-            # Check for BREAKDOWN DOWN below Support Zone
-            crossed_below_floor = (c_prev >= active_sup_zone.low and c_curr < active_sup_zone.low)
-            if crossed_below_floor:
-                is_adverse_wick = (o_curr - c_curr) < (h_curr - o_curr)
-                if not is_adverse_wick and (osc_curr > volume_thresh or c_curr < o_curr):
-                    breaks.append(LuxBreakEvent(
-                        bar_index=i, timestamp=bar_ts, price=c_curr,
-                        break_type="BREAK_DOWN", label="B", volume_osc=osc_curr
-                    ))
-                    active_sup_zone.status = "BROKEN_DOWN"
-                elif is_adverse_wick:
+        # crossunder(close, lowUsePivot)
+        if not np.isnan(lp) and not np.isnan(lp_prev):
+            if c_prev >= lp_prev and c_curr < lp:
+                if (o_curr - c_curr) < (h_curr - o_curr):
                     breaks.append(LuxBreakEvent(
                         bar_index=i, timestamp=bar_ts, price=c_curr,
                         break_type="BEAR_WICK", label="Bear Wick", volume_osc=osc_curr
                     ))
+                    if active_sup_zone:
+                        active_sup_zone.status = "BEAR_WICK"
+                elif osc_curr > volume_thresh:
+                    breaks.append(LuxBreakEvent(
+                        bar_index=i, timestamp=bar_ts, price=c_curr,
+                        break_type="BREAK_DOWN", label="B", volume_osc=osc_curr
+                    ))
+                    if active_sup_zone:
+                        active_sup_zone.status = "BROKEN_DOWN"
 
-    # Evaluate all past and present zones across the entire 2000-candle history:
+        # crossover(close, highUsePivot)
+        if not np.isnan(hp) and not np.isnan(hp_prev):
+            if c_prev <= hp_prev and c_curr > hp:
+                if (o_curr - l_curr) > (c_curr - o_curr):
+                    breaks.append(LuxBreakEvent(
+                        bar_index=i, timestamp=bar_ts, price=c_curr,
+                        break_type="BULL_WICK", label="Bull Wick", volume_osc=osc_curr
+                    ))
+                    if active_res_zone:
+                        active_res_zone.status = "BULL_WICK"
+                elif osc_curr > volume_thresh:
+                    breaks.append(LuxBreakEvent(
+                        bar_index=i, timestamp=bar_ts, price=c_curr,
+                        break_type="BREAK_UP", label="B", volume_osc=osc_curr
+                    ))
+                    if active_res_zone:
+                        active_res_zone.status = "BROKEN_UP"
+
+    # Evaluate current candle interaction with active zones:
     cur_spot = closes[-1] if n > 0 else 0.0
     cur_high = highs[-1] if n > 0 else cur_spot
     cur_low = lows[-1] if n > 0 else cur_spot
 
-    # 1. Did current candle enter ANY past or present Resistance Zone (either body inside or wick high pierced)?
-    containing_res = [z for z in all_zones if z.zone_type == "RESISTANCE" and (z.low <= cur_spot <= z.high or (cur_high >= z.low and cur_low <= z.high))]
-    if containing_res:
-        active_res_zone = containing_res[-1]
-    else:
-        overhead_res = [z for z in all_zones if z.zone_type == "RESISTANCE" and z.high >= cur_spot and z.status != "BROKEN_UP"]
-        if overhead_res:
-            active_res_zone = min(overhead_res, key=lambda z: (z.low - cur_spot) if z.low >= cur_spot else 0.0)
+    if active_res_zone is not None:
+        if cur_spot > active_res_zone.high:
+            active_res_zone.status = "BROKEN_UP"
+        elif cur_high >= active_res_zone.low and cur_low <= active_res_zone.high:
+            active_res_zone.status = "TESTING"
+        elif active_res_zone.status not in ("BROKEN_UP", "BULL_WICK"):
+            active_res_zone.status = "ACTIVE"
 
-    # 2. Did current candle enter ANY past or present Support Zone (either body inside or wick low swept)?
-    containing_sup = [z for z in all_zones if z.zone_type == "SUPPORT" and (z.low <= cur_spot <= z.high or (cur_low <= z.high and cur_high >= z.low))]
-    if containing_sup:
-        active_sup_zone = containing_sup[-1]
-    else:
-        underfoot_sup = [z for z in all_zones if z.zone_type == "SUPPORT" and z.low <= cur_spot and z.status != "BROKEN_DOWN"]
-        if underfoot_sup:
-            active_sup_zone = min(underfoot_sup, key=lambda z: (cur_spot - z.high) if cur_spot >= z.high else 0.0)
+    if active_sup_zone is not None:
+        if cur_spot < active_sup_zone.low:
+            active_sup_zone.status = "BROKEN_DOWN"
+        elif cur_low <= active_sup_zone.high and cur_high >= active_sup_zone.low:
+            active_sup_zone.status = "TESTING"
+        elif active_sup_zone.status not in ("BROKEN_DOWN", "BEAR_WICK"):
+            active_sup_zone.status = "ACTIVE"
 
     return high_use_pivot, low_use_pivot, osc, breaks, active_res_zone, active_sup_zone, all_zones
 
@@ -417,11 +389,11 @@ def compute_sr_context(
 
     # 2. Compute full LuxAlgo pivot zones for each timeframe
     tf_configs = [
-        ("5m", df_5m, 10, 10, 3),
+        ("5m", df_5m, 15, 15, 3),
         ("15m", df_15m, 15, 15, 4),
         ("30m", df_30m, 15, 15, 4),
-        ("1h", df_1h, 12, 12, 5),
-        ("4h", df_4h, 10, 10, 5),
+        ("1h", df_1h, 15, 15, 5),
+        ("4h", df_4h, 15, 15, 5),
     ]
 
     for tf_name, df, left_b, right_b, strength in tf_configs:

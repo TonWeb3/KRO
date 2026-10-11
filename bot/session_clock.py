@@ -39,8 +39,8 @@ def get_session_info(now_utc: datetime.datetime | None = None) -> SessionInfo:
 
     active: List[str] = []
 
-    # Weekend check
-    if weekday == 5 or (weekday == 4 and hour >= 21.0) or (weekday == 6 and hour < 21.0):
+    # Weekend check (Forex & Metals close Friday 21:00 UTC through Sunday midnight UTC)
+    if weekday == 5 or (weekday == 4 and hour >= 21.0) or (weekday == 6 and hour < 23.9):
         return SessionInfo(
             current_utc=now.strftime("%H:%M:%S UTC"),
             active_sessions=["WEEKEND_CLOSED"],

@@ -126,25 +126,61 @@ def _build_chart_dict(symbol: str, interval: str, history: int = 250) -> Optiona
     sr_ctx = BOT.sr_contexts.get(symbol)
     spot = BOT.client.get_spot(symbol) or float(df["close"].iloc[-1])
 
-    srl_dict = sr_ctx.to_dict() if sr_ctx else {}
-    if len(df) >= 35:
+    srl_dict: Dict[str, Any] = {}
+    if len(df) >= 32:
         try:
             from .sr_levels import compute_lux_pivots_and_breaks
-            _, _, osc_arr, tf_breaks, r_zone, s_zone, _ = compute_lux_pivots_and_breaks(
+            _, _, osc_arr, tf_breaks, r_zone, s_zone, tf_zones = compute_lux_pivots_and_breaks(
                 df, left_bars=15, right_bars=15, volume_thresh=20.0, timeframe=interval
             )
-            if r_zone:
-                srl_dict["active_resistance_zone"] = r_zone.to_dict()
-                srl_dict["active_resistance"] = r_zone.high
-            if s_zone:
-                srl_dict["active_support_zone"] = s_zone.to_dict()
-                srl_dict["active_support"] = s_zone.low
-            if tf_breaks:
-                srl_dict["break_events"] = [b.to_dict() for b in tf_breaks[-20:]]
-            if len(osc_arr):
-                srl_dict["volume_osc"] = round(float(osc_arr[-1]), 1)
+            srl_dict["timeframe"] = interval
+            srl_dict["active_resistance_zone"] = r_zone.to_dict() if r_zone else None
+            srl_dict["active_support_zone"] = s_zone.to_dict() if s_zone else None
+            srl_dict["active_resistance"] = round(r_zone.high, 3) if r_zone else None
+            srl_dict["active_support"] = round(s_zone.low, 3) if s_zone else None
+            srl_dict["resistance_floor"] = round(r_zone.low, 3) if r_zone else None
+            srl_dict["support_ceiling"] = round(s_zone.high, 3) if s_zone else None
+            srl_dict["break_events"] = [b.to_dict() for b in tf_breaks[-25:]]
+            srl_dict["volume_osc"] = round(float(osc_arr[-1]), 1) if len(osc_arr) else 0.0
+            # Sequential horizontal line segments matching TradingView Pine Script
+            res_zones = [z for z in tf_zones if z.zone_type == "RESISTANCE"]
+            sup_zones = [z for z in tf_zones if z.zone_type == "SUPPORT"]
+
+            res_segments = []
+            for idx_z, z in enumerate(res_zones):
+                is_last = (idx_z == len(res_zones) - 1)
+                nxt_bar = res_zones[idx_z + 1].pivot_bar_index if not is_last else len(df) - 1
+                res_segments.append({
+                    "start_idx": z.pivot_bar_index,
+                    "end_idx": nxt_bar,
+                    "start_ts": z.timestamp,
+                    "end_ts": res_zones[idx_z + 1].timestamp if not is_last else "",
+                    "high": round(z.high, 3),
+                    "low": round(z.low, 3),
+                    "is_active": is_last,
+                })
+
+            sup_segments = []
+            for idx_z, z in enumerate(sup_zones):
+                is_last = (idx_z == len(sup_zones) - 1)
+                nxt_bar = sup_zones[idx_z + 1].pivot_bar_index if not is_last else len(df) - 1
+                sup_segments.append({
+                    "start_idx": z.pivot_bar_index,
+                    "end_idx": nxt_bar,
+                    "start_ts": z.timestamp,
+                    "end_ts": sup_zones[idx_z + 1].timestamp if not is_last else "",
+                    "low": round(z.low, 3),
+                    "high": round(z.high, 3),
+                    "is_active": is_last,
+                })
+
+            srl_dict["res_segments"] = res_segments
+            srl_dict["sup_segments"] = sup_segments
+            srl_dict["all_zones"] = [z.to_dict() for z in tf_zones[-8:]]
         except Exception as e:
             log.debug("Timeframe SR calculation skipped for %s %s: %s", symbol, interval, e)
+    elif sr_ctx:
+        srl_dict = sr_ctx.to_dict()
 
     out = {
         "symbol": symbol,

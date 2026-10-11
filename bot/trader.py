@@ -291,6 +291,16 @@ class Bot:
         self.eval_trigger = asyncio.Event()
         self.running = True
 
+    def get_spot(self, symbol: str) -> Optional[float]:
+        p = self.client.get_spot(symbol)
+        if p is not None and p > 0:
+            return p
+        for iv in ["5m", "15m", "30m", "1h", "4h"]:
+            df = self.candles.get(symbol, iv)
+            if df is not None and len(df) and "close" in df.columns:
+                return float(df["close"].iloc[-1])
+        return None
+
     def _on_candle_closed(self, symbol: str, interval: str) -> None:
         """Invoked the exact millisecond a live candle completes and officially closes via WebSocket.
         The completed bar is added to the rolling 2,000-candle history (oldest bar discarded if >2000),
@@ -764,6 +774,7 @@ class Bot:
     def state(self) -> dict:
         balance = self.client.balance
         active_tf = self.cfg.get_active_timeframe(balance)
+        active_macro_tf = self.cfg.get_active_macro_timeframe(balance)
 
         # Serialized active contracts
         act_dict = {}
@@ -807,7 +818,7 @@ class Bot:
             "account_id": self.client.account_id or "—",
             "balance": round(balance, 2) if balance is not None else None,
             "currency": self.client.currency,
-            "spots": {s: self.client.get_spot(s) for s in self.symbols},
+            "spots": {s: self.get_spot(s) for s in self.symbols},
             "day_pnl": round(self.day_pnl, 2),
             "day_trades": self.day_trades,
             "day_start_balance": round(self.day_start_balance, 2) if self.day_start_balance is not None else (round(balance, 2) if balance is not None else None),

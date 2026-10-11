@@ -517,10 +517,15 @@ function renderHeaderAndSpots(s) {
   if (!s) return;
   const goldP = s.spots ? s.spots['frxXAUUSD'] : null;
   const silvP = s.spots ? s.spots['frxXAGUSD'] : null;
-  if ($('cGoldSpot')) $('cGoldSpot').textContent = `Gold: $${f(goldP, 2)}`;
-  if ($('cSilverSpot')) $('cSilverSpot').textContent = `Silver: $${f(silvP, 2)}`;
+  const isWeekend = s.session_clock && (s.session_clock.liquidity_state === 'CLOSED' || (s.session_clock.active_sessions && s.session_clock.active_sessions.includes('WEEKEND_CLOSED')));
+  if ($('cGoldSpot')) $('cGoldSpot').textContent = `Gold: $${f(goldP, 2)}${isWeekend ? ' (Weekend)' : ''}`;
+  if ($('cSilverSpot')) $('cSilverSpot').textContent = `Silver: $${f(silvP, 2)}${isWeekend ? ' (Weekend)' : ''}`;
   if ($('tabGoldPrice')) $('tabGoldPrice').textContent = `$${f(goldP, 2)}`;
   if ($('tabSilverPrice')) $('tabSilverPrice').textContent = `$${f(silvP, 2)}`;
+  if (isWeekend) {
+    if ($('tabGoldBadge')) $('tabGoldBadge').innerHTML = '<span class="badge" style="background:rgba(244,63,94,0.15); color:#fb7185; border:1px solid rgba(244,63,94,0.3);">Market Closed (Weekend)</span>';
+    if ($('tabSilverBadge')) $('tabSilverBadge').innerHTML = '<span class="badge" style="background:rgba(244,63,94,0.15); color:#fb7185; border:1px solid rgba(244,63,94,0.3);">Market Closed (Weekend)</span>';
+  }
   if ($('cMode')) $('cMode').textContent = (s.mode || 'demo').toUpperCase();
   if ($('cAcct')) $('cAcct').textContent = `Account: ${s.account_id || '—'}`;
   if ($('cBal')) $('cBal').textContent = s.balance != null ? `${s.currency || 'USD'} ${Number(s.balance).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}` : 'USD —';
@@ -635,53 +640,108 @@ function renderChart(d) {
     g += `<text x="${PL - 6}" y="${y + 4}" fill="#4d7580" font-size="9" text-anchor="end" font-family="ui-monospace">${f(p, 2)}</text>`;
   }
 
-  // LuxAlgo Support & Resistance Candle Zones with Breaks & Reversals
+  // LuxAlgo Support & Resistance Sequential Lines & Zones (Isolated strictly to active timeframe, zero labels)
   const srl = d.sr_levels || {};
-  const rZone = srl.active_resistance_zone;
-  const sZone = srl.active_support_zone;
-  const activeRes = rZone ? rZone.high : srl.active_resistance;
-  const activeResLow = rZone ? rZone.low : (activeRes ? activeRes * 0.998 : null);
-  const activeSup = sZone ? sZone.low : srl.active_support;
-  const activeSupHigh = sZone ? sZone.high : (activeSup ? activeSup * 1.002 : null);
+  const activeTf = (d.interval || ACTIVE_TF).toUpperCase();
 
-  // 1. LuxAlgo Active Resistance Zone [Floor, Ceiling]
-  if (activeRes && activeResLow && activeRes >= minP && activeResLow <= maxP) {
-    const yTop = Math.max(PT, Y(activeRes));
-    const yBot = Math.min(H - PB, Y(activeResLow));
-    const zH = Math.max(3, yBot - yTop);
-    const zStatus = rZone && rZone.status ? rZone.status.replace(/_/g, ' ') : 'ACTIVE';
-    g += `<rect x="${PL}" y="${yTop.toFixed(1)}" width="${W - PL - PR}" height="${zH.toFixed(1)}" fill="rgba(244,63,94,0.14)" stroke="rgba(244,63,94,0.3)" stroke-width="0.5"/>`;
-    g += `<line x1="${PL}" y1="${yTop.toFixed(1)}" x2="${W - PR}" y2="${yTop.toFixed(1)}" stroke="#f43f5e" stroke-width="2" stroke-linecap="round"/>`;
-    g += `<line x1="${PL}" y1="${yBot.toFixed(1)}" x2="${W - PR}" y2="${yBot.toFixed(1)}" stroke="#f43f5e" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.7"/>`;
-    const tag = `RES ZONE: $${f(activeResLow, 2)} - $${f(activeRes, 2)} [${zStatus}]`;
-    g += `<rect x="${W - PR - 210}" y="${(yTop - 16).toFixed(1)}" width="205" height="15" fill="rgba(244,63,94,0.22)" rx="4" stroke="#f43f5e" stroke-width="0.8"/>`;
-    g += `<text x="${W - PR - 6}" y="${(yTop - 5).toFixed(1)}" fill="#f43f5e" font-size="8.5" font-weight="700" text-anchor="end" font-family="ui-monospace">${tag}</text>`;
-  }
-
-  // 2. LuxAlgo Active Support Zone [Floor, Ceiling]
-  if (activeSup && activeSupHigh && activeSupHigh >= minP && activeSup <= maxP) {
-    const yTop = Math.max(PT, Y(activeSupHigh));
-    const yBot = Math.min(H - PB, Y(activeSup));
-    const zH = Math.max(3, yBot - yTop);
-    const zStatus = sZone && sZone.status ? sZone.status.replace(/_/g, ' ') : 'ACTIVE';
-    g += `<rect x="${PL}" y="${yTop.toFixed(1)}" width="${W - PL - PR}" height="${zH.toFixed(1)}" fill="rgba(56,189,248,0.14)" stroke="rgba(56,189,248,0.3)" stroke-width="0.5"/>`;
-    g += `<line x1="${PL}" y1="${yBot.toFixed(1)}" x2="${W - PR}" y2="${yBot.toFixed(1)}" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>`;
-    g += `<line x1="${PL}" y1="${yTop.toFixed(1)}" x2="${W - PR}" y2="${yTop.toFixed(1)}" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.7"/>`;
-    const tag = `SUP ZONE: $${f(activeSup, 2)} - $${f(activeSupHigh, 2)} [${zStatus}]`;
-    g += `<rect x="${W - PR - 210}" y="${(yBot + 3).toFixed(1)}" width="205" height="15" fill="rgba(56,189,248,0.22)" rx="4" stroke="#38bdf8" stroke-width="0.8"/>`;
-    g += `<text x="${W - PR - 6}" y="${(yBot + 14).toFixed(1)}" fill="#38bdf8" font-size="8.5" font-weight="700" text-anchor="end" font-family="ui-monospace">${tag}</text>`;
-  }
-
-  // 3. Secondary Validated S/R Pivot Levels
-  if (srl.levels && srl.levels.length) {
-    srl.levels.forEach(lvl => {
-      if (lvl.price !== activeRes && lvl.price !== activeSup && lvl.price >= minP && lvl.price <= maxP) {
-        const yL = Y(lvl.price);
-        const col = lvl.level_type === 'SUPPORT' ? 'rgba(56, 189, 248, 0.45)' : 'rgba(244, 63, 94, 0.45)';
-        g += `<line x1="${PL}" y1="${yL.toFixed(1)}" x2="${W - PR}" y2="${yL.toFixed(1)}" stroke="${col}" stroke-width="1" stroke-dasharray="3 4"/>`;
-        g += `<text x="${PL + 6}" y="${(yL - 3).toFixed(1)}" fill="${col}" font-size="8" font-family="ui-monospace">${lvl.level_type.substring(0, 3)}: $${f(lvl.price, 2)} (${lvl.timeframe})</text>`;
-      }
+  // Build timestamp-to-index lookup for candles
+  const tsToIndex = {};
+  if (d.hist_ts) {
+    d.hist_ts.forEach((ts, idx) => {
+      tsToIndex[ts] = idx;
+      const key = ('' + ts).substring(0, 19);
+      if (tsToIndex[key] === undefined) tsToIndex[key] = idx;
     });
+  }
+
+  const getXCoord = (idx, ts) => {
+    if (ts && tsToIndex[('' + ts).substring(0, 19)] !== undefined) {
+      return X(tsToIndex[('' + ts).substring(0, 19)]);
+    }
+    if (typeof idx === 'number' && idx >= 0 && idx < nH) {
+      return X(idx);
+    }
+    return PL;
+  };
+
+  // 1. Sequential Resistance Lines & Zones (Red - High solid line, Low dashed line)
+  const resSegs = srl.res_segments || [];
+  if (resSegs.length) {
+    resSegs.forEach(seg => {
+      let x1 = getXCoord(seg.start_idx, seg.start_ts);
+      let x2 = seg.is_active ? (W - PR) : getXCoord(seg.end_idx, seg.end_ts);
+      x1 = Math.max(PL, Math.min(W - PR, x1));
+      x2 = Math.max(PL, Math.min(W - PR, x2));
+      if (x2 <= x1 + 1) return;
+      if (seg.high < minP || seg.low > maxP) return;
+
+      const yTop = Math.max(PT, Y(seg.high));
+      const yBot = Math.min(H - PB, Y(seg.low));
+      const zH = Math.max(1.5, yBot - yTop);
+
+      // Pivot candle zone fill
+      g += `<rect x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" width="${(x2 - x1).toFixed(1)}" height="${zH.toFixed(1)}" fill="rgba(244,63,94,0.10)" stroke="none"/>`;
+      // Main Resistance Line (Solid Red)
+      g += `<line x1="${x1.toFixed(1)}" y1="${yTop.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${yTop.toFixed(1)}" stroke="#f43f5e" stroke-width="2.6" stroke-linecap="round"/>`;
+      // Zone boundary floor (Dashed Red)
+      g += `<line x1="${x1.toFixed(1)}" y1="${yBot.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${yBot.toFixed(1)}" stroke="#f43f5e" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.6"/>`;
+    });
+  } else {
+    const rZone = srl.active_resistance_zone;
+    const aRes = rZone ? rZone.high : srl.active_resistance;
+    const aResLow = rZone ? rZone.low : (aRes ? aRes * 0.998 : null);
+    if (aRes && aResLow && aRes >= minP && aResLow <= maxP) {
+      const yTop = Math.max(PT, Y(aRes));
+      const yBot = Math.min(H - PB, Y(aResLow));
+      const zH = Math.max(1.5, yBot - yTop);
+      let x1 = PL;
+      if (rZone && rZone.timestamp && tsToIndex[('' + rZone.timestamp).substring(0, 19)] !== undefined) {
+        x1 = Math.max(PL, X(tsToIndex[('' + rZone.timestamp).substring(0, 19)]));
+      }
+      g += `<rect x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" width="${(W - PR - x1).toFixed(1)}" height="${zH.toFixed(1)}" fill="rgba(244,63,94,0.10)" stroke="none"/>`;
+      g += `<line x1="${x1.toFixed(1)}" y1="${yTop.toFixed(1)}" x2="${W - PR}" y2="${yTop.toFixed(1)}" stroke="#f43f5e" stroke-width="2.6" stroke-linecap="round"/>`;
+      g += `<line x1="${x1.toFixed(1)}" y1="${yBot.toFixed(1)}" x2="${W - PR}" y2="${yBot.toFixed(1)}" stroke="#f43f5e" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.6"/>`;
+    }
+  }
+
+  // 2. Sequential Support Lines & Zones (Blue - Low solid line, High dashed line)
+  const supSegs = srl.sup_segments || [];
+  if (supSegs.length) {
+    supSegs.forEach(seg => {
+      let x1 = getXCoord(seg.start_idx, seg.start_ts);
+      let x2 = seg.is_active ? (W - PR) : getXCoord(seg.end_idx, seg.end_ts);
+      x1 = Math.max(PL, Math.min(W - PR, x1));
+      x2 = Math.max(PL, Math.min(W - PR, x2));
+      if (x2 <= x1 + 1) return;
+      if (seg.high < minP || seg.low > maxP) return;
+
+      const yTop = Math.max(PT, Y(seg.high));
+      const yBot = Math.min(H - PB, Y(seg.low));
+      const zH = Math.max(1.5, yBot - yTop);
+
+      // Pivot candle zone fill
+      g += `<rect x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" width="${(x2 - x1).toFixed(1)}" height="${zH.toFixed(1)}" fill="rgba(56,189,248,0.10)" stroke="none"/>`;
+      // Main Support Line (Solid Blue)
+      g += `<line x1="${x1.toFixed(1)}" y1="${yBot.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${yBot.toFixed(1)}" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round"/>`;
+      // Zone boundary ceiling (Dashed Blue)
+      g += `<line x1="${x1.toFixed(1)}" y1="${yTop.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${yTop.toFixed(1)}" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.6"/>`;
+    });
+  } else {
+    const sZone = srl.active_support_zone;
+    const aSup = sZone ? sZone.low : srl.active_support;
+    const aSupHigh = sZone ? sZone.high : (aSup ? aSup * 1.002 : null);
+    if (aSup && aSupHigh && aSupHigh >= minP && aSup <= maxP) {
+      const yTop = Math.max(PT, Y(aSupHigh));
+      const yBot = Math.min(H - PB, Y(aSup));
+      const zH = Math.max(1.5, yBot - yTop);
+      let x1 = PL;
+      if (sZone && sZone.timestamp && tsToIndex[('' + sZone.timestamp).substring(0, 19)] !== undefined) {
+        x1 = Math.max(PL, X(tsToIndex[('' + sZone.timestamp).substring(0, 19)]));
+      }
+      g += `<rect x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" width="${(W - PR - x1).toFixed(1)}" height="${zH.toFixed(1)}" fill="rgba(56,189,248,0.10)" stroke="none"/>`;
+      g += `<line x1="${x1.toFixed(1)}" y1="${yBot.toFixed(1)}" x2="${W - PR}" y2="${yBot.toFixed(1)}" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round"/>`;
+      g += `<line x1="${x1.toFixed(1)}" y1="${yTop.toFixed(1)}" x2="${W - PR}" y2="${yTop.toFixed(1)}" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.6"/>`;
+    }
   }
 
   // Forecast uncertainty band

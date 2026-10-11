@@ -385,13 +385,15 @@ class DerivClient:
                         break
                     accumulated = new_unique + accumulated
 
-                if len(accumulated) >= count or len(candles) < 50:
+                if len(accumulated) >= count or (current_end != "latest" and len(candles) < 10):
                     break
 
                 oldest_epoch = int(accumulated[0]["open_time"] // 1000)
                 current_end = oldest_epoch - 1
 
             accumulated.sort(key=lambda x: x["open_time"])
+            if accumulated and self.prices.get(symbol, 0.0) <= 0:
+                self.prices[symbol] = float(accumulated[-1]["close"])
             return accumulated[-count:]
         except Exception as e:
             self.last_error = f"fetch_candles ({symbol}): {e}"
