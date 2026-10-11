@@ -1,0 +1,77 @@
+{
+  "deriv": {
+    "app_id": "33LuGFJlOlfbqzHVZLFCi",
+    "token": "pat_ee87daeca5b7e28b7d7c2f73a67f7e00a040e713a37e42622b76bc23ecd12bee",
+    "mode": "demo"
+  },
+  "market": {
+    "symbols": [
+      "frxXAUUSD",
+      "frxXAGUSD"
+    ],
+    "timeframe_mode": "adaptive",
+    "low_balance_threshold": 250.0,
+    "mid_balance_threshold": 750.0
+  },
+  "kronos": {
+    "model_id": "NeoQuasar/Kronos-mini",
+    "tokenizer_id": "NeoQuasar/Kronos-Tokenizer-2k",
+    "device": "auto",
+    "max_context": 512,
+    "lookback": 288,
+    "entry_pred_len": 20,
+    "n_paths": 24,
+    "n_paths_regime": 16,
+    "max_batch": 64,
+    "temperature": 1.0,
+    "top_p": 0.9,
+    "top_k": 0
+  },
+  "multipliers": {
+    "available_multipliers": [
+      100,
+      200,
+      300,
+      500,
+      800
+    ],
+    "default_multiplier": 200,
+    "max_multiplier": 800,
+    "max_sl_stake_pct": 50.0,
+    "use_deal_cancellation": false
+  },
+  "strategy": {
+    "min_prob": 0.6,
+    "min_rrr": 1.5,
+    "dynamic_model_tp_sl": true,
+    "enable_news_trading": true,
+    "enforce_session_filter": false,
+    "risk_type": "percent",
+    "risk_value": 2.0,
+    "currency": "USD",
+    "max_concurrent": 2,
+    "cooldown_bars": 1,
+    "max_trades_per_day": 20,
+    "max_daily_loss_pct": 5.0
+  },
+  "validator": {
+    "enable_validator_model": true,
+    "validator_model_name": "llama3.2:3b",
+    "validator_api_url": "http://localhost:11434",
+    "validator_require_confirmation": true,
+    "validator_min_confidence": 0.65
+  },
+  "position_monitor": {
+    "enable_position_monitor": true,
+    "close_on_reversal": true,
+    "reversal_prob_threshold": 0.65,
+    "take_profit_early_pct": 40.0,
+    "protect_peak_profit": true
+  },
+  "infra": {
+    "db_path": "kronos_deriv.db",
+    "host": "0.0.0.0",
+    "port": 8120,
+    "log_level": "INFO"
+  }
+}

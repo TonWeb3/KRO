@@ -1,0 +1,105 @@
+"""Entry point for Kronos Deriv Multiplier Autonomous Trading Bot (Gold & Silver).
+
+    python main.py                  # run bot + web dashboard
+    python main.py --check          # validate config.json and exit
+    python main.py --headless       # trading loop only, no web server
+    python main.py --port 8120      # override port
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import bot
+from bot.config import CONFIG_PATH, CFG
+
+
+def banner() -> None:
+    symbols_str = ", ".join(CFG.symbols or ["frxXAUUSD", "frxXAGUSD"])
+    mults_str = ", ".join(str(m) + "x" for m in (CFG.available_multipliers or [100, 200, 300, 500, 800]))
+    print(f"""
+  ========================================================================
+  KRONOS DERIV MULTIPLIER BOT — GOLD & SILVER PRECIOUS METALS
+  ========================================================================
+  config     {CONFIG_PATH}
+  assets     {symbols_str} (Concurrent Dual-Asset)
+  timeframes {CFG.timeframe_mode.upper()} [5m micro-SL / 15m / 30m] + 1h Macro Trend
+  multipliers [{mults_str}] with Algorithmic S/R Capital Protection
+  model      {CFG.model_id} | device={CFG.device} | paths={CFG.n_paths}
+  mode       {CFG.mode.upper()} account | risk {CFG.risk_value}{'%' if CFG.risk_type == 'percent' else ' ' + CFG.currency} ({CFG.risk_type})
+  features   Support & Resistance + US Macro News Breakout + Session Clock
+  dashboard  http://{'localhost' if CFG.host in ('0.0.0.0', '') else CFG.host}:{CFG.port}
+  ========================================================================
+""")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true", help="validate config.json and exit")
+    ap.add_argument("--headless", action="store_true", help="run trading loop with no web server")
+    ap.add_argument("--host", default=None)
+    ap.add_argument("--port", type=int, default=None)
+    a = ap.parse_args()
+
+    if a.host:
+        CFG.host = a.host
+    if a.port:
+        CFG.port = a.port
+
+    logging.basicConfig(
+        level=getattr(logging, CFG.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+    )
+
+    banner()
+    errs = CFG.validate()
+    if errs:
+        print("CONFIG ERRORS:")
+        for e in errs:
+            print(f"  - {e}")
+        raise SystemExit(1)
+    print("  config OK\n")
+
+    from bot.engine import ensure_weights
+
+    print(f"  Verifying & downloading model weights for '{CFG.model_id}'...")
+    try:
+        ensure_weights(CFG.model_id, CFG.tokenizer_id)
+        print("  Model weights verified & ready.\n")
+    except ModuleNotFoundError as e:
+        print(f"\n  ERROR: Missing required Python dependency: {e.name}")
+        print("  Please install all requirements using:")
+        print("    pip install -r requirements.txt\n")
+        raise SystemExit(1)
+    except Exception as e:
+        print(f"\n  ERROR: Failed to download model weights: {e}")
+        print("  Please check your internet connection or Hugging Face access.\n")
+        raise SystemExit(1)
+
+    if a.check:
+        print("  all checks passed (config & model verified).\n")
+        return
+
+    if CFG.mode == "real":
+        print("  !! REAL MONEY TRADING ACTIVE. Ctrl-C within 5s to abort.\n")
+        import time
+        time.sleep(5)
+
+    if a.headless:
+        import asyncio
+        from bot.trader import Bot
+        print("  headless mode: running multiplier trading loop only\n")
+        asyncio.run(Bot().run())
+        return
+
+    import uvicorn
+    from bot.api import app
+    uvicorn.run(app, host=CFG.host, port=CFG.port, log_level=CFG.log_level.lower())
+
+
+if __name__ == "__main__":
+    main()
