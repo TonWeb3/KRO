@@ -462,6 +462,55 @@ def compute_sr_context(
                 all_levels.append(SRLevel(price=s_zone.low, level_type="SUPPORT", strength=strength, source=f"LUX_{tf_name.upper()}", timeframe=tf_name))
                 all_levels.append(SRLevel(price=s_zone.high, level_type="SUPPORT", strength=max(1, strength - 1), source=f"LUX_{tf_name.upper()}", timeframe=tf_name))
 
+            # If spot/candle is not inside the active latest zones, check if it entered any past historical S/R zones
+            if not entered_by_spot_r and not entered_by_wick_r and not entered_by_spot_s and not entered_by_wick_s:
+                for pz in reversed(z_list[:-1] if len(z_list) > 1 else []):
+                    tol_p = max(0.2, pz.height * 0.35)
+                    wick_in = (last_h >= pz.low and last_l <= pz.high)
+                    spot_in = (spot >= pz.low - tol_p and spot <= pz.high + tol_p)
+                    if wick_in or spot_in:
+                        if pz.zone_type == "RESISTANCE":
+                            r_zone = pz
+                            entered_by_wick_r = wick_in
+                            entered_by_spot_r = spot_in
+                            if entry_fc is not None:
+                                up_p = getattr(entry_fc, "upside_prob", 0.5)
+                                if up_p >= 0.52:
+                                    model_verdict = "ZONE_BREAK_UP"
+                                    model_reason = f"Breakout above historical {tf_name} Resistance Zone [${pz.low:.2f} - ${pz.high:.2f}]"
+                                elif up_p <= 0.48:
+                                    model_verdict = "ZONE_REVERSAL_DOWN"
+                                    model_reason = f"Bearish Reversal bounce from historical {tf_name} Resistance Zone [${pz.low:.2f} - ${pz.high:.2f}]"
+                                else:
+                                    model_verdict = "TESTING_RESISTANCE"
+                                    model_reason = f"Testing historical {tf_name} Resistance Zone [${pz.low:.2f} - ${pz.high:.2f}]"
+                            all_levels.append(SRLevel(price=pz.high, level_type="RESISTANCE", strength=strength, source=f"LUX_HIST_{tf_name.upper()}", timeframe=tf_name))
+                            all_levels.append(SRLevel(price=pz.low, level_type="RESISTANCE", strength=max(1, strength - 1), source=f"LUX_HIST_{tf_name.upper()}", timeframe=tf_name))
+                            break
+                        elif pz.zone_type == "SUPPORT":
+                            s_zone = pz
+                            entered_by_wick_s = wick_in
+                            entered_by_spot_s = spot_in
+                            if entry_fc is not None:
+                                up_p = getattr(entry_fc, "upside_prob", 0.5)
+                                if up_p >= 0.52:
+                                    model_verdict = "ZONE_REVERSAL_UP"
+                                    model_reason = f"Bullish Reversal bounce from historical {tf_name} Support Zone [${pz.low:.2f} - ${pz.high:.2f}]"
+                                elif up_p <= 0.48:
+                                    model_verdict = "ZONE_BREAK_DOWN"
+                                    model_reason = f"Breakdown below historical {tf_name} Support Zone [${pz.low:.2f} - ${pz.high:.2f}]"
+                                else:
+                                    model_verdict = "TESTING_SUPPORT"
+                                    model_reason = f"Testing historical {tf_name} Support Zone [${pz.low:.2f} - ${pz.high:.2f}]"
+                            all_levels.append(SRLevel(price=pz.low, level_type="SUPPORT", strength=strength, source=f"LUX_HIST_{tf_name.upper()}", timeframe=tf_name))
+                            all_levels.append(SRLevel(price=pz.high, level_type="SUPPORT", strength=max(1, strength - 1), source=f"LUX_HIST_{tf_name.upper()}", timeframe=tf_name))
+                            break
+
+            # Also populate past historical pivot levels to all_levels so nearest_support/nearest_resistance map them
+            for pz in z_list[-25:]:
+                all_levels.append(SRLevel(price=pz.high, level_type=pz.zone_type, strength=max(1, strength - 1), source=f"LUX_HIST_{tf_name.upper()}", timeframe=tf_name))
+                all_levels.append(SRLevel(price=pz.low, level_type=pz.zone_type, strength=max(1, strength - 1), source=f"LUX_HIST_{tf_name.upper()}", timeframe=tf_name))
+
             # Determine timeframe zone position
             dist_s = ((spot - s_zone.low) / spot * 100.0) if s_zone else 999.0
             dist_r = ((r_zone.high - spot) / spot * 100.0) if r_zone else 999.0

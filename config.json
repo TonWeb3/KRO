@@ -47,7 +47,7 @@
     "enable_news_trading": true,
     "enforce_session_filter": false,
     "risk_type": "percent",
-    "risk_value": 2.0,
+    "risk_value": 20.0,
     "currency": "USD",
     "max_concurrent": 2,
     "cooldown_bars": 1,

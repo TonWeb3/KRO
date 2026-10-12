@@ -288,20 +288,39 @@ async def api_close_contract(payload: dict = Body(...)):
 @app.get("/api/settings")
 async def api_settings():
     global CFG
-    from .config import Config
+    from .config import Config, CONFIG_PATH
     try:
-        fresh_cfg = Config.load()
-        for k in dir(fresh_cfg):
-            if not k.startswith("_") and hasattr(CFG, k):
-                setattr(CFG, k, getattr(fresh_cfg, k))
+        cur_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
+        last_mtime = getattr(CFG, "_mtime", 0.0)
+        # Only reload from disk if file was modified externally (strictly newer than last read/save)
+        if cur_mtime > last_mtime and last_mtime > 0.0:
+            fresh_cfg = Config.load(CONFIG_PATH)
+            from dataclasses import fields as dc_fields
+            for f in dc_fields(fresh_cfg):
+                setattr(CFG, f.name, getattr(fresh_cfg, f.name))
+            CFG._mtime = cur_mtime
+            if BOT:
+                BOT.cfg = CFG
+                if hasattr(BOT, "position_monitor"):
+                    BOT.position_monitor.cfg = CFG
+                if hasattr(BOT, "validator"):
+                    BOT.validator.cfg = CFG
     except Exception as e:
-        log.warning("Config reload error in api_settings: %s", e)
+        log.warning("Config reload check error in api_settings: %s", e)
 
-    return {
+    resp_data = {
         "fields": settings_schema(CFG),
         "errors": CFG.validate(),
         "restart_pending": _restart_pending()
     }
+    return JSONResponse(
+        content=resp_data,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 
 @app.post("/api/settings")
@@ -313,7 +332,7 @@ async def api_settings_save(payload: dict = Body(...)):
         if not hasattr(trial, k):
             rejected[k] = "unknown setting"
             continue
-        if k == "token" and v == "***set***":
+        if k == "token" and (v == "***set***" or not v or str(v).strip() == ""):
             continue
         try:
             setattr(trial, k, coerce(trial, k, v))
@@ -323,12 +342,31 @@ async def api_settings_save(payload: dict = Body(...)):
 
     errs = trial.validate()
     if errs or rejected:
-        return {"ok": False, "errors": errs, "rejected": rejected}
+        err_msg = "; ".join(errs) if errs else ""
+        rej_msg = "; ".join(f"{k}: {v}" for k, v in rejected.items()) if rejected else ""
+        full_msg = f"{err_msg} ({rej_msg})" if (err_msg and rej_msg) else (err_msg or rej_msg)
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": full_msg, "errors": errs, "rejected": rejected},
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        )
 
     for k, v in applied.items():
         setattr(CFG, k, v)
     path = CFG.save()
+    CFG._mtime = os.path.getmtime(path) if os.path.exists(path) else time.time()
+    log.info("Configuration updated in %s: %s", path, applied)
     pending = _restart_pending()
+
+    # Synchronize BOT instance and child components immediately
+    if BOT:
+        BOT.cfg = CFG
+        if hasattr(BOT, "position_monitor"):
+            BOT.position_monitor.cfg = CFG
+        if hasattr(BOT, "validator"):
+            BOT.validator.cfg = CFG
+        BOT._last_config_mtime = CFG._mtime
+        BOT.eval_trigger.set()
 
     # Automatically update Deriv client if credentials or trading mode changed
     cred_keys = {"app_id", "token", "mode"}
@@ -344,14 +382,20 @@ async def api_settings_save(payload: dict = Body(...)):
             BOT.validator.start_download_async()
             download_started = True
 
-    return {
-        "ok": True,
-        "saved": path,
-        "applied": list(applied),
-        "restart_required": [k for k in applied if k in pending and k not in cred_keys],
-        "restart_pending": pending,
-        "validator_download_started": download_started,
-    }
+    return JSONResponse(
+        content={
+            "ok": True,
+            "saved": path,
+            "applied": list(applied),
+            "restart_required": [k for k in applied if k in pending and k not in cred_keys],
+            "restart_pending": pending,
+            "validator_download_started": download_started,
+        },
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache"
+        }
+    )
 
 
 @app.post("/api/deriv/reconnect")

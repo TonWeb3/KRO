@@ -480,7 +480,7 @@ input:focus, select:focus { outline: 0; border-color: var(--cyan); box-shadow: 0
     <div id="setBody">Loading settings…</div>
     <div style="margin-top:20px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <button class="btn primary" id="bSave" onclick="saveSettings()">Save Configuration</button>
-      <button class="btn" onclick="loadSettings()">Reset</button>
+      <button class="btn" onclick="DIRTY = {}; loadSettings(true)">Reset</button>
       <button class="btn ok" onclick="reconnectDeriv()">🔌 Reconnect Deriv</button>
       <button class="btn" onclick="restartBot()">🔄 Restart Bot</button>
       <span class="dim" id="saveMsg" style="font-family:var(--mono);"></span>
@@ -1372,7 +1372,7 @@ function renderSettingsFields(fields) {
         input = `<label style="cursor:pointer; display:flex; align-items:center; gap:8px; margin-top:4px;"><input type="checkbox" id="${id}" ${fl.value ? 'checked' : ''} onchange="markField('${fl.key}')" style="width:auto;"> <span style="font-size:12px; color:var(--txt);">${fl.value ? 'Enabled' : 'Disabled'}</span></label>`;
       } else {
         const valDisplay = (Array.isArray(fl.value) || typeof fl.value === 'object') ? JSON.stringify(fl.value) : (fl.value != null ? fl.value : '');
-        input = `<input id="${id}" type="${fl.type === 'int' || fl.type === 'float' ? 'number' : 'text'}" ${fl.type === 'float' ? 'step="any"' : ''} value="${esc(valDisplay)}" oninput="markField('${fl.key}')">`;
+        input = `<input id="${id}" type="${fl.type === 'int' || fl.type === 'float' ? 'number' : 'text'}" ${fl.type === 'float' ? 'step="any"' : ''} value="${esc(valDisplay)}" oninput="markField('${fl.key}')" onchange="markField('${fl.key}')">`;
       }
       html += `
         <div class="f" id="w_${fl.key}">
@@ -1391,7 +1391,7 @@ async function loadSettings(force = false) {
   const sb = $('setBody');
   if (!sb) return;
 
-  // 1. Instant check from localStorage: render immediately with 0ms delay!
+  // 1. Check from localStorage if not forcing fresh fetch
   if (!force && (!FIELDS || !FIELDS.length)) {
     try {
       const cached = localStorage.getItem('KRONOS_SETTINGS_CACHE');
@@ -1407,12 +1407,16 @@ async function loadSettings(force = false) {
   }
   if ($('bSave')) $('bSave').disabled = Object.keys(DIRTY).length === 0;
 
-  // 2. Fetch fresh live config from /api/settings with an AbortController timeout of 6s
+  // 2. Fetch fresh live config from /api/settings with an AbortController timeout of 6s and cache-busting
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 6000);
 
   try {
-    const res = await fetch('/api/settings', { signal: controller.signal });
+    const res = await fetch('/api/settings?_t=' + Date.now(), {
+      signal: controller.signal,
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+    });
     clearTimeout(timeoutId);
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     const r = await res.json();
@@ -1422,8 +1426,8 @@ async function loadSettings(force = false) {
       try {
         localStorage.setItem('KRONOS_SETTINGS_CACHE', JSON.stringify(freshFields));
       } catch (e) {}
-      // If user hasn't made dirty edits, update display with live values
-      if (Object.keys(DIRTY).length === 0) {
+      // Update display with verified server values if not currently editing dirty fields or if forced
+      if (force || Object.keys(DIRTY).length === 0) {
         renderSettingsFields(FIELDS);
       }
     }
@@ -1449,32 +1453,50 @@ function markField(k) {
   const w = $('w_' + k);
   if (w) w.classList.add('dirty');
   if ($('bSave')) $('bSave').disabled = false;
+  const sm = $('saveMsg');
+  if (sm) sm.innerHTML = '<span class="cyan" style="font-size:12px;">Unsaved changes… Click "Save Configuration" to apply.</span>';
 }
 
 async function saveSettings() {
   const changes = {};
   for (const fl of FIELDS) {
-    if (DIRTY[fl.key]) {
-      const el = $('fld_' + fl.key);
-      if (!el) continue;
-      if (fl.type === 'bool') {
-        changes[fl.key] = el.checked;
-      } else if (fl.type === 'int') {
-        changes[fl.key] = parseInt(el.value);
-      } else if (fl.type === 'float') {
-        changes[fl.key] = parseFloat(el.value);
-      } else {
-        let v = el.value;
-        if (Array.isArray(fl.value)) {
-          try { v = JSON.parse(v); } catch(e) {
-            v = v.split(',').map(x => x.trim()).filter(Boolean);
-          }
+    const el = $('fld_' + fl.key);
+    if (!el) continue;
+    let v;
+    if (fl.key === 'token') {
+      const trimmed = (el.value || '').trim();
+      if (trimmed === '***set***' || trimmed === '') {
+        continue;
+      }
+      v = trimmed;
+    } else if (fl.type === 'bool') {
+      v = el.checked;
+    } else if (fl.type === 'int' || fl.key === 'default_multiplier' || fl.key === 'max_multiplier') {
+      const raw = String(el.value || '').trim().replace(/[xX%$]/g, '').replace(',', '.');
+      v = raw === '' ? fl.value : parseInt(raw);
+    } else if (fl.type === 'float') {
+      const raw = String(el.value || '').trim().replace(/[%$]/g, '').replace(',', '.');
+      v = raw === '' ? fl.value : parseFloat(raw);
+    } else {
+      v = el.value;
+      if (Array.isArray(fl.value)) {
+        try { v = JSON.parse(v); } catch(e) {
+          v = v.split(',').map(x => x.trim()).filter(Boolean);
         }
-        changes[fl.key] = v;
       }
     }
+    // Ensure dirty or modified fields are included with 100% certainty
+    if (DIRTY[fl.key] || JSON.stringify(v) !== JSON.stringify(fl.value)) {
+      changes[fl.key] = v;
+    }
   }
-  $('saveMsg').textContent = 'Saving…';
+
+  if (Object.keys(changes).length === 0) {
+    $('saveMsg').innerHTML = '<span class="dim">No changes to save.</span>';
+    return;
+  }
+
+  $('saveMsg').textContent = 'Saving parameters to config.json…';
   if ($('bSave')) $('bSave').disabled = true;
 
   try {
@@ -1485,16 +1507,51 @@ async function saveSettings() {
     }).then(x => x.json());
 
     if (r.ok) {
+      // 1. Update in-memory FIELDS so cached values match what was saved
+      for (const [k, v] of Object.entries(changes)) {
+        const fl = FIELDS.find(f => f.key === k);
+        if (fl) {
+          fl.value = (k === 'token') ? '***set***' : v;
+        }
+      }
+      try {
+        localStorage.setItem('KRONOS_SETTINGS_CACHE', JSON.stringify(FIELDS));
+      } catch (e) {}
+
+      // 2. Clear dirty flags and remove CSS highlight classes
+      DIRTY = {};
+      document.querySelectorAll('.dirty').forEach(e => e.classList.remove('dirty'));
+      if ($('bSave')) $('bSave').disabled = true;
+
+      // 3. Keep the input element values stable so they do not flash or revert
+      for (const [k, v] of Object.entries(changes)) {
+        const el = $('fld_' + k);
+        if (!el) continue;
+        if (k === 'token') {
+          el.value = '***set***';
+        } else if (typeof v === 'boolean') {
+          el.checked = v;
+          const lbl = el.nextElementSibling;
+          if (lbl) lbl.textContent = v ? 'Enabled' : 'Disabled';
+        } else if (Array.isArray(v) || typeof v === 'object') {
+          el.value = JSON.stringify(v);
+        } else {
+          el.value = v;
+        }
+      }
+
+      // 4. Update status and chips immediately
       let extra = '';
       if (r.applied && (r.applied.includes('token') || r.applied.includes('app_id') || r.applied.includes('mode'))) {
         extra = ' (Deriv WS reconnected)';
         reconnectDeriv();
       }
-      $('saveMsg').innerHTML = `<span class="up">✓ Saved successfully!${extra}</span>`;
+      $('saveMsg').innerHTML = `<span class="up">✓ Saved to config.json & applied live! [${esc((r.applied || []).join(', '))}]${extra}</span>`;
       tick();
-      setTimeout(loadSettings, 1000);
     } else {
-      $('saveMsg').innerHTML = `<span class="dn">${esc(r.error || (r.errors && r.errors.join(', ')) || 'Error saving settings')}</span>`;
+      const rejStr = (r.rejected && Object.keys(r.rejected).length) ? Object.entries(r.rejected).map(([k, v]) => `${k}: ${v}`).join('; ') : '';
+      const errText = r.error || (r.errors && r.errors.length ? r.errors.join(', ') : '') || rejStr || 'Error saving settings';
+      $('saveMsg').innerHTML = `<span class="dn">❌ ${esc(errText)}</span>`;
       if ($('bSave')) $('bSave').disabled = false;
     }
   } catch (err) {

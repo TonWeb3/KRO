@@ -13,13 +13,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .config import CFG
+from .config import CFG, CONFIG_PATH, Config
 from .deriv_client import DerivClient
 from .engine import INTERVAL_MINUTES, KronosEngine
 from .news_engine import NewsEngine, NewsState
@@ -267,6 +268,7 @@ class Bot:
         self.macro_4h_fc: Dict[str, Optional[Any]] = {s: None for s in self.symbols}
         self._macro_4h_cache: Dict[str, Dict[str, Any]] = {s: {"ts": 0.0, "fc": None} for s in self.symbols}
         self._macro_inter_cache: Dict[str, Dict[str, Any]] = {s: {"ts": 0.0, "fc": None, "tf": ""} for s in self.symbols}
+        self._last_config_mtime: float = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
 
         # Multi-asset runtime state
         self.forecasts: Dict[str, Dict[str, Any]] = {s: {} for s in self.symbols}
@@ -424,6 +426,21 @@ class Bot:
                 log.exception("Multiplier evaluation failed")
 
     async def _evaluate_all(self, preview: bool = False) -> None:
+        # Detect if config.json was modified on disk (via settings UI or external edit) and live-reload
+        try:
+            mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
+            if mtime > self._last_config_mtime and self._last_config_mtime > 0:
+                log.info("Detected change in %s -> Live reloading config parameters into running engine...", CONFIG_PATH)
+                fresh = Config.load(CONFIG_PATH)
+                from dataclasses import fields as dc_fields
+                for f in dc_fields(fresh):
+                    setattr(self.cfg, f.name, getattr(fresh, f.name))
+                self._last_config_mtime = mtime
+            elif self._last_config_mtime == 0.0:
+                self._last_config_mtime = mtime
+        except Exception as e:
+            log.debug("Config live reload check error: %s", e)
+
         self.session_info = get_session_info()
         self.news_state = self.news_engine.evaluate()
         balance = self.client.balance
@@ -564,7 +581,27 @@ class Bot:
             )
             self.last_plans[sym] = plan
 
-            block = "preview" if preview else self._risk_block(sym)
+            cur_contract = self.active_contracts.get(sym)
+            is_flip = False
+
+            if cur_contract is not None:
+                # Active position currently open on this asset
+                if plan.tradeable and plan.direction in (MULTUP, MULTDOWN) and plan.direction != cur_contract.direction:
+                    is_flip = True
+                    log.warning("DIRECTION REVERSAL DETECTED on %s: Active %s -> Qualified %s (%s). Executing direction flip.",
+                                sym, cur_contract.direction, plan.direction, plan.quality_grade)
+                elif cur_contract.direction == plan.direction:
+                    # Same direction: Still says Buy while in Buy (or Sell while in Sell) -> LEAVE IT TO RUN!
+                    log.info("%s active %s position intact | Analysis supports continuation -> LEAVING WINNER TO RUN",
+                             sym, cur_contract.direction)
+                    continue
+                else:
+                    # Plan is FLAT: No opposite trigger -> LEAVE IT TO RUN!
+                    log.info("%s active %s position intact | Neutral holding -> LEAVING TO RUN",
+                             sym, cur_contract.direction)
+                    continue
+
+            block = "preview" if preview else self._risk_block(sym, is_flip=is_flip)
             if block and plan.direction != FLAT:
                 plan.direction = FLAT
                 plan.reason = f"blocked: {block}"
@@ -578,6 +615,22 @@ class Bot:
                      plan.spot, plan.stop_loss, plan.rrr, plan.multiplier, plan.stake, plan.reason)
 
             if taken:
+                if is_flip and cur_contract is not None:
+                    # Close the active opposite contract immediately
+                    cid = cur_contract.contract_id
+                    log.warning("CLOSING ACTIVE %s #%s to immediately reverse into %s", cur_contract.direction, cid, plan.direction)
+                    sell_res = await self.client.sell(cid)
+                    if sell_res.get("ok"):
+                        exit_spot = cur_contract.current_spot or spot
+                        profit = cur_contract.profit
+                        status = "won" if profit > 0 else "lost"
+                        self.store.close_trade(cid, exit_spot, profit, status)
+                        self.day_pnl += profit
+                        await self.client.fetch_balance()
+                        self.active_contracts[sym] = None
+                        log.info("Closed %s #%s successfully (P&L $%.2f). Opening reverse %s contract now...",
+                                 cur_contract.direction, cid, profit, plan.direction)
+
                 await self._execute_multiplier(plan, decision_id)
 
         self.busy = ""
@@ -596,16 +649,16 @@ class Bot:
             if self.halted_reason.startswith("daily"):
                 self.halted_reason = ""
 
-    def _risk_block(self, symbol: str) -> str:
+    def _risk_block(self, symbol: str, is_flip: bool = False) -> str:
         self._roll_day()
         if not self.trading_enabled:
             return "bot stopped (click Start)"
         if self.halted_reason:
             return self.halted_reason
-        if self.active_contracts.get(symbol) is not None:
+        if not is_flip and self.active_contracts.get(symbol) is not None:
             return f"{symbol} multiplier already open"
 
-        active_count = sum(1 for c in self.active_contracts.values() if c is not None)
+        active_count = sum(1 for s, c in self.active_contracts.items() if c is not None and (not is_flip or s != symbol))
         if active_count >= self.cfg.max_concurrent:
             return "max concurrent trades reached"
 
@@ -617,11 +670,12 @@ class Bot:
         if self.day_trades >= self.cfg.max_trades_per_day:
             return "daily trade cap"
 
-        sec_since = time.time() - self.last_entry_ts.get(symbol, 0.0)
-        cb = max(0, getattr(self.cfg, "cooldown_bars", 1))
-        cooldown_sec = INTERVAL_MINUTES.get(self.cfg.get_active_timeframe(self.client.balance), 5) * 60 * cb
-        if cooldown_sec > 0 and sec_since < cooldown_sec:
-            return "cooldown"
+        if not is_flip:
+            sec_since = time.time() - self.last_entry_ts.get(symbol, 0.0)
+            cb = max(0, getattr(self.cfg, "cooldown_bars", 1))
+            cooldown_sec = INTERVAL_MINUTES.get(self.cfg.get_active_timeframe(self.client.balance), 5) * 60 * cb
+            if cooldown_sec > 0 and sec_since < cooldown_sec:
+                return "cooldown"
 
         if self.client.balance is not None and self.client.balance <= 0:
             return "insufficient balance"
@@ -713,6 +767,7 @@ class Bot:
 
                         await self.client.fetch_balance()
                         self.active_contracts[sym] = None
+                        self.last_entry_ts[sym] = time.time()  # Activate cooldown to prevent whipsaw revenge entry
                         self.eval_trigger.set()
                         continue
 
@@ -721,6 +776,7 @@ class Bot:
                         latest_fc = self.forecasts.get(sym, {}).get(contract.timeframe)
                         sr_c = self.sr_contexts.get(sym)
                         candles_df = self.candles.get(sym, contract.timeframe, include_forming=True)
+                        macro_fc = self.macro_4h_fc.get(sym) or self._macro_inter_cache.get(sym, {}).get("fc")
                         verdict, reason = self.position_monitor.evaluate_position(
                             contract=contract,
                             current_spot=contract.current_spot,
@@ -728,6 +784,7 @@ class Bot:
                             sr_ctx=sr_c,
                             news=self.news_state,
                             candles_df=candles_df,
+                            macro_fc=macro_fc,
                         )
                         contract.monitor_verdict = verdict
                         contract.monitor_reason = reason
@@ -744,6 +801,7 @@ class Bot:
                                 self.day_pnl += profit
                                 await self.client.fetch_balance()
                                 self.active_contracts[sym] = None
+                                self.last_entry_ts[sym] = time.time()  # Activate cooldown to prevent whipsaw revenge entry
                                 self.eval_trigger.set()
                                 continue
 
@@ -765,6 +823,7 @@ class Bot:
             self.store.close_trade(act.contract_id, exit_spot, profit, status)
             self.day_pnl += profit
             self.active_contracts[symbol] = None
+            self.last_entry_ts[symbol] = time.time()  # Activate cooldown
             await self.client.fetch_balance()
             self.eval_trigger.set()
             log.info("MANUALLY CLOSED MULTIPLIER #%s (%s): %s | Profit: $%.2f | Balance: %s",

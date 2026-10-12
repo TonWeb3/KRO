@@ -216,6 +216,7 @@ class Config:
             if k in names:
                 setattr(cfg, k, v)
         cfg._path = path
+        cfg._mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
         return cfg
 
     def to_nested(self) -> dict:
@@ -229,6 +230,10 @@ class Config:
         path = path or getattr(self, "_path", CONFIG_PATH)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(self.to_nested(), fh, indent=2)
+        try:
+            self._mtime = os.path.getmtime(path)
+        except Exception:
+            pass
         return path
 
     def redacted(self) -> dict:
@@ -327,14 +332,44 @@ def coerce(cfg: Config, key: str, raw: Any) -> Any:
     if isinstance(cur, bool):
         return raw if isinstance(raw, bool) else str(raw).lower() in ("1", "true", "yes", "on")
     if isinstance(cur, int):
-        return int(float(raw))
+        if raw is None or raw == "":
+            return cur
+        cleaned = str(raw).strip().replace("x", "").replace("X", "").replace("%", "").replace("$", "").replace(",", ".")
+        return int(float(cleaned))
     if isinstance(cur, float):
-        return float(raw)
+        if raw is None or raw == "":
+            return cur
+        cleaned = str(raw).strip().replace("%", "").replace("$", "").replace(",", ".")
+        val = float(cleaned)
+        if key in ("min_prob", "reversal_prob_threshold", "validator_min_confidence") and 1.0 < val <= 100.0:
+            val = round(val / 100.0, 4)
+        return val
     if isinstance(cur, list):
+        if key == "available_multipliers":
+            if isinstance(raw, list):
+                return [int(x) for x in raw if str(x).strip().isdigit()]
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [int(x) for x in parsed if str(x).strip().isdigit()]
+            except Exception:
+                pass
+            return [int(x.strip()) for x in str(raw).split(",") if x.strip().isdigit()]
+        if key == "symbols":
+            if isinstance(raw, list):
+                return [str(x).strip() for x in raw if str(x).strip()]
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception:
+                pass
+            return [str(x).strip() for x in str(raw).split(",") if str(x).strip()]
         if isinstance(raw, list):
             return raw
         try:
             return json.loads(raw)
         except Exception:
             return [x.strip() for x in str(raw).split(",") if x.strip()]
-    return str(raw)
+    return str(raw).strip() if raw is not None else ""
+
